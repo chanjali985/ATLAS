@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ATLAS Operations</title>
+<style>
+:root{--bg:#0f1216;--panel:#171b21;--line:#262c35;--text:#e6e9ee;--muted:#8b95a3;--accent:#5aa9ff;--ok:#3ecf8e;--warn:#f5b041;--bad:#ef5b5b}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,-apple-system,Segoe UI,sans-serif}
+header{display:flex;align-items:center;gap:12px;padding:14px 20px;border-bottom:1px solid var(--line)}
+header h1{font-size:17px;margin:0;letter-spacing:.04em}header .tag{color:var(--muted);font-size:12px}
+main{display:grid;grid-template-columns:1.1fr 1fr;gap:16px;padding:16px 20px;max-width:1500px;margin:auto}
+@media(max-width:1000px){main{grid-template-columns:1fr}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px}
+.card h2{font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:0 0 10px}
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.kpi{background:#11151a;border-radius:8px;padding:10px}
+.kpi b{display:block;font-size:22px;font-variant-numeric:tabular-nums}.kpi span{color:var(--muted);font-size:12px}
+.racks{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.rack{background:#11151a;border-radius:8px;padding:8px}
+.rack h3{margin:0 0 6px;font-size:12px;color:var(--muted)}
+.srv{display:flex;align-items:center;gap:6px;font-size:12px;margin:3px 0;cursor:pointer}.srv .bar{flex:1;height:8px;background:#222933;border-radius:4px;overflow:hidden}
+.srv .bar i{display:block;height:100%}.srv.off{opacity:.45;text-decoration:line-through}
+textarea{width:100%;min-height:70px;background:#11151a;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:10px;font:inherit}
+button{background:var(--accent);color:#06121f;border:0;border-radius:7px;padding:8px 12px;font-weight:600;cursor:pointer}
+button.ghost{background:transparent;color:var(--text);border:1px solid var(--line)}button.bad{background:var(--bad);color:#fff}button.ok{background:var(--ok)}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+table{width:100%;border-collapse:collapse;font-size:12px}th,td{padding:6px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+th{color:var(--muted);font-weight:500}.pill{padding:2px 7px;border-radius:10px;font-size:11px}.pill.y{background:#173d2c;color:var(--ok)}.pill.n{background:#40191b;color:var(--bad)}
+.report{white-space:pre-wrap;background:#11151a;border-radius:8px;padding:10px;font-size:13px}
+.trace{max-height:240px;overflow:auto;font:12px ui-monospace,monospace;color:var(--muted)}
+.full{grid-column:1/-1}.muted{color:var(--muted)}svg text{fill:var(--muted);font-size:10px}
+.spin{display:none;color:var(--warn)}.busy .spin{display:inline}
+</style></head><body>
+<header><h1>ATLAS</h1><span class="tag">Autonomous AI Digital Twin · <span id="llm"></span></span></header>
+<main>
+ <section class="card"><h2>Digital twin — live state</h2>
+  <div class="kpis" id="kpis"></div>
+  <p class="muted" style="font-size:12px;margin:10px 0 6px">Click a server to inject a failure. Bars show peak CPU.</p>
+  <div class="racks" id="racks"></div>
+  <div class="row"><button class="ghost" onclick="post('/api/inject',{restore_all:true}).then(renderState)">Restore all servers</button>
+  <button class="ghost" onclick="post('/api/reset',{}).then(()=>{renderState();renderChart()})">Reset environment</button></div>
+ </section>
+ <section class="card"><h2>Cluster CPU demand — history &amp; 7-day forecast</h2><div id="chart"></div><p class="muted" id="feval" style="font-size:12px"></p></section>
+ <section class="card full" id="askcard"><h2>Ask ATLAS <span class="spin">· agents working…</span></h2>
+  <textarea id="q">Our cloud infrastructure costs increased by 30% this month. Investigate the cause, predict next week's resource requirements, simulate cost-saving strategies, and recommend a safe optimization plan.</textarea>
+  <div class="row"><button onclick="ask()">Run agents</button>
+   <button class="ghost" onclick="preset('Investigate the incident: why did CPU usage spike? Find the root cause.')">Demo 1 · Incident</button>
+   <button class="ghost" onclick="preset('Forecast demand for the next 7 days and tell me if capacity will be insufficient.')">Demo 2 · Forecast</button>
+   <button class="ghost" onclick="preset('What happens if server 9 goes offline and traffic +30%?')">Demo 3 · What-if</button>
+   <button class="ghost" onclick="preset('Optimize: can we consolidate onto fewer servers and reduce cost safely?')">Demo 4 · Optimize</button></div>
+ </section>
+ <section class="card full" id="result" style="display:none">
+  <h2>Result <span id="status"></span></h2><div class="row" id="approval"></div>
+  <div class="report" id="report"></div>
+  <h2 style="margin-top:14px">Scenario comparison (simulated in the twin, verified by Safety agent)</h2><div id="cmp"></div>
+  <h2 style="margin-top:14px">Plan · agent trace · A2A messages</h2><div class="trace" id="trace"></div>
+ </section>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+const get=u=>fetch(u).then(r=>r.json());
+const post=(u,b)=>fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)}).then(async r=>{const j=await r.json();if(!r.ok)throw new Error(j.detail||r.status);return j});
+const pct=x=>x==null?'—':(x*100).toFixed(0)+'%', money=x=>x==null?'—':'$'+Math.round(x).toLocaleString();
+const col=u=>u>.85?'var(--bad)':u>.7?'var(--warn)':'var(--ok)';
+async function renderState(){
+ const s=await get('/api/state'), m=s.summary;
+ $('kpis').innerHTML=[['Active servers',m.active_servers],['Avg CPU',pct(m.avg_cpu_util)],['Max peak CPU',pct(m.peak_cpu_util_max)],['Monthly cost',money(m.monthly_cost)]]
+  .map(([k,v])=>`<div class="kpi"><b>${v}</b><span>${k}</span></div>`).join('')+
+  `<div class="kpi" style="grid-column:1/-1"><span>${m.safe?'✅ All constraints satisfied':'⚠️ '+m.violations.slice(0,3).join(' · ')}</span></div>`;
+ const racks={};s.servers.forEach(v=>(racks[v.rack]=racks[v.rack]||[]).push(v));
+ $('racks').innerHTML=Object.entries(racks).map(([r,vs])=>`<div class="rack"><h3>${r}</h3>${vs.map(v=>`<div class="srv ${v.online?'':'off'}" title="${v.services.join(', ')||'idle'}" onclick="fail('${v.id}')"><span>${v.id.slice(4)}</span><div class="bar"><i style="width:${Math.min(v.cpu_util,1)*100}%;background:${col(v.cpu_util)}"></i></div><span>${v.active?pct(v.cpu_util):'idle'}</span></div>`).join('')}</div>`).join('');
+ $('feval').textContent=`Forecast model on 7-day holdout: GBM MAPE ${(s.forecast_eval.gbm_mape*100).toFixed(1)}% vs seasonal-naive ${(s.forecast_eval.seasonal_naive_mape*100).toFixed(1)}%`;
+}
+async function fail(id){await post('/api/inject',{fail_server:id});renderState();$('q').value=`What happens now that ${id} is offline? Investigate the incident and recommend a safe plan.`}
+async function renderChart(){
+ const t=await get('/api/telemetry'),h=t.history.cores,f=t.forecast.cores,all=h.concat(f),W=620,H=220,P=30;
+ const mx=Math.max(...all)*1.05,mn=Math.min(...all)*.9,x=i=>P+i*(W-P-5)/(all.length-1),y=v=>H-P+5-(v-mn)/(mx-mn)*(H-P-5);
+ const path=(a,o)=>a.map((v,i)=>(i?'L':'M')+x(i+o).toFixed(1)+','+y(v).toFixed(1)).join('');
+ const ticks=[mn,(mn+mx)/2,mx].map(v=>`<text x="0" y="${y(v)+3}">${v.toFixed(0)}</text><line x1="${P}" x2="${W}" y1="${y(v)}" y2="${y(v)}" stroke="#262c35"/>`).join('');
+ $('chart').innerHTML=`<svg viewBox="0 0 ${W} ${H}" width="100%">${ticks}<path d="${path(h,0)}" fill="none" stroke="#5aa9ff" stroke-width="1.3"/><path d="${path([h[h.length-1]].concat(f),h.length-1)}" fill="none" stroke="#f5b041" stroke-width="1.6" stroke-dasharray="4 3"/><line x1="${x(h.length-1)}" x2="${x(h.length-1)}" y1="5" y2="${H-P+5}" stroke="#8b95a3" stroke-dasharray="2 3"/><text x="${x(h.length-1)+4}" y="14">forecast →</text><text x="${P}" y="${H-5}">${t.history.ts[0].slice(0,10)}</text><text x="${W-70}" y="${H-5}">${t.forecast.ts.at(-1).slice(0,10)}</text></svg><span class="muted" style="font-size:12px">cores (blue: actual · amber dashed: forecast)</span>`;
+}
+function preset(q){$('q').value=q;ask()}
+async function ask(){
+ document.body.classList.add('busy');
+ try{renderRun(await post('/api/ask',{query:$('q').value}))}catch(e){alert(e.message)}finally{document.body.classList.remove('busy')}
+}
+function renderRun(st){
+ $('result').style.display='block';$('status').textContent='· '+st.status;
+ $('report').textContent=st.report;
+ const d=st.decision||{};
+ $('cmp').innerHTML=d.comparison?`<table><tr><th>Scenario</th><th>Servers</th><th>Cost/mo</th><th>Avg CPU</th><th>Max peak CPU</th><th>N+1</th><th>Verdict</th><th>Reasons</th></tr>${d.comparison.map(r=>`<tr style="${r.name===d.recommended?'background:#13263a':''}"><td>${r.name}${r.name===d.recommended?' ⭐':''}</td><td>${r.active_servers??'—'}</td><td>${money(r.monthly_cost)}</td><td>${pct(r.avg_cpu_util)}</td><td>${pct(r.peak_cpu_util_max)}</td><td>${r.n_plus_one==null?'—':r.n_plus_one?'✓':'✗'}</td><td>${r.approved==null?(r.safe?'<span class="pill y">safe</span>':'<span class="pill n">unsafe</span>'):r.approved?'<span class="pill y">approved</span>':'<span class="pill n">rejected</span>'}</td><td class="muted">${(r.reasons||[]).slice(0,3).join('; ')}</td></tr>`).join('')}</table>`:'<p class="muted">No simulation in this plan.</p>';
+ $('approval').innerHTML=st.status==='awaiting_approval'?`<button class="ok" onclick="decide('${st.id}','approve')">Approve &amp; apply to twin</button><button class="bad" onclick="decide('${st.id}','reject')">Reject</button><span class="muted">Human-in-the-loop: nothing changes until approved.</span>`:'';
+ const tr=[`PLAN (${st.plan.planner}): ${st.plan.steps.join(' → ')} ${JSON.stringify(st.plan.what_if||{})}`,...(st.replans||[]).map(r=>'REPLAN: '+r)]
+  .concat((st.trace||[]).map(e=>`${e.kind.padEnd(8)} ${e.agent.padEnd(13)} ${e.tool||''} ${e.ms!=null?e.ms+'ms':''} ${e.ok===false?'ERROR '+e.error:''}`))
+  .concat((st.a2a_messages||[]).map(m=>`A2A      ${m.from} → ${m.to}: ${m.type} ${JSON.stringify(m.payload)}`));
+ $('trace').textContent=tr.join('\n');
+}
+async function decide(id,a){const st=await post(`/api/runs/${id}/${a}`,{approver:'dashboard-user'});renderRun(st);renderState()}
+get('/api/health').then(h=>$('llm').textContent=h.llm==='claude'?'Claude-powered planning':'offline rule-based planner (set ANTHROPIC_API_KEY for Claude)');
+renderState();renderChart();
+</script></body></html>
